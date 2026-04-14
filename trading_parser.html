@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Log Parser</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap');
+
+  :root {
+    --bg: #0d0d0f;
+    --surface: #16161a;
+    --surface2: #1e1e24;
+    --border: #2a2a35;
+    --accent: #7c6af7;
+    --accent2: #4fd1a5;
+    --danger: #f05a5a;
+    --text: #e8e8f0;
+    --muted: #7a7a96;
+    --win: #4fd1a5;
+    --loss: #f05a5a;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 32px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 32px;
+    padding-bottom: 20px;
+    border-bottom: 0.5px solid var(--border);
+  }
+
+  header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  header span {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+    background: rgba(124,106,247,0.12);
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+  }
+
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  textarea {
+    width: 100%;
+    height: 200px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
+    padding: 16px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  textarea:focus { border-color: var(--accent); }
+  textarea::placeholder { color: var(--muted); }
+
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  button {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover { background: #6b59e8; transform: translateY(-1px); }
+  .btn-primary:active { transform: translateY(0); }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    border: 0.5px solid var(--border);
+  }
+  .btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+
+  /* RESULTS */
+  #results { display: none; margin-top: 36px; }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+
+  .stat-card .label {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+
+  .stat-card .value {
+    font-size: 24px;
+    font-weight: 700;
+    font-family: var(--mono);
+    letter-spacing: -1px;
+  }
+
+  .value.positive { color: var(--win); }
+  .value.negative { color: var(--loss); }
+  .value.neutral { color: var(--text); }
+
+  /* TRADES TABLE */
+  .trades-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  thead tr {
+    border-bottom: 0.5px solid var(--border);
+  }
+
+  th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+  }
+
+  tbody tr {
+    border-bottom: 0.5px solid rgba(42,42,53,0.6);
+    transition: background 0.1s;
+  }
+
+  tbody tr:hover { background: var(--surface2); }
+
+  td {
+    padding: 10px 12px;
+    vertical-align: middle;
+  }
+
+  .ticker-badge {
+    background: rgba(124,106,247,0.15);
+    color: var(--accent);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+  }
+
+  .side-badge {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  .side-long { background: rgba(79,209,165,0.12); color: var(--win); }
+  .side-short { background: rgba(240,90,90,0.12); color: var(--loss); }
+
+  .pl-value { font-weight: 500; }
+  .pl-pos { color: var(--win); }
+  .pl-neg { color: var(--loss); }
+
+  /* NOTION SECTION */
+  .notion-section {
+    margin-top: 28px;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  .notion-section h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .notion-dot {
+    width: 8px; height: 8px;
+    background: var(--accent2);
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .field-group label {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-bottom: 5px;
+    letter-spacing: 0.3px;
+  }
+
+  .field-group input {
+    width: 100%;
+    background: var(--bg);
+    border: 0.5px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 8px 12px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .field-group input:focus { border-color: var(--accent); }
+  .field-group input::placeholder { color: var(--muted); }
+
+  .notion-status {
+    margin-top: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 10px 14px;
+    border-radius: 7px;
+    display: none;
+  }
+  .notion-status.success { background: rgba(79,209,165,0.1); color: var(--win); display: block; }
+  .notion-status.error { background: rgba(240,90,90,0.1); color: var(--loss); display: block; }
+  .notion-status.loading { background: rgba(124,106,247,0.1); color: var(--accent); display: block; }
+
+  /* RAW PREVIEW */
+  .raw-section {
+    margin-top: 20px;
+  }
+
+  .toggle-raw {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .toggle-raw:hover { color: var(--text); }
+
+  .raw-box {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.7;
+    color: var(--muted);
+    white-space: pre;
+    overflow-x: auto;
+    display: none;
+  }
+
+  .error-msg {
+    background: rgba(240,90,90,0.08);
+    border: 0.5px solid rgba(240,90,90,0.3);
+    border-radius: 8px;
+    color: var(--loss);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 12px 16px;
+    margin-top: 12px;
+    display: none;
+  }
+
+  @media (max-width: 600px) {
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .field-row { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Trading Log Parser</h1>
+  <span>BROKER → NOTION</span>
+</header>
+
+<div class="section-label">Log del broker</div>
+<textarea id="logInput" placeholder="Pegá acá el texto del log de tu broker..."></textarea>
+
+<div class="btn-row">
+  <button class="btn-primary" onclick="parseLog()">Parsear log</button>
+  <button class="btn-ghost" onclick="loadExample()">Cargar ejemplo</button>
+  <button class="btn-ghost" onclick="clearAll()">Limpiar</button>
+</div>
+
+<div id="errorMsg" class="error-msg"></div>
+
+<div id="results">
+
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="label">P&L TOTAL</div>
+      <div class="value" id="statPL">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">TRADES</div>
+      <div class="value neutral" id="statTrades">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">WIN RATE</div>
+      <div class="value neutral" id="statWR">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">TICKERS</div>
+      <div class="value neutral" id="statTickers">—</div>
+    </div>
+  </div>
+
+  <div class="trades-header">
+    <div class="section-label" style="margin:0">Trades del día</div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Ticker</th>
+        <th>Lado</th>
+        <th>Shares</th>
+        <th>Entry avg</th>
+        <th>Exit avg</th>
+        <th>P&L</th>
+        <th>Hora entrada</th>
+      </tr>
+    </thead>
+    <tbody id="tradesBody"></tbody>
+  </table>
+
+  <!-- NOTION -->
+  <div class="notion-section">
+    <h3><span class="notion-dot"></span> Enviar a Notion</h3>
+
+    <div class="field-row">
+      <div class="field-group">
+        <label>NOTION API TOKEN</label>
+        <input type="password" id="notionToken" placeholder="secret_xxxxxxxxxxxx" />
+      </div>
+      <div class="field-group">
+        <label>DATABASE ID</label>
+        <input type="text" id="notionDbId" placeholder="32-char ID de tu database" />
+      </div>
+    </div>
+
+    <div class="btn-row" style="margin-top:4px">
+      <button class="btn-primary" onclick="sendToNotion()">Enviar a Notion</button>
+      <button class="btn-ghost" onclick="copyJSON()">Copiar JSON</button>
+    </div>
+
+    <div id="notionStatus" class="notion-status"></div>
+  </div>
+
+  <div class="raw-section">
+    <button class="toggle-raw" onclick="toggleRaw()">
+      <span id="rawArrow">▶</span> Ver JSON generado
+    </button>
+    <pre id="rawBox" class="raw-box"></pre>
+  </div>
+
+</div>
+
+<script>
+// ─── PARSER CORE ───────────────────────────────────────────────────────────────
+
+function parseLog() {
+  const raw = document.getElementById('logInput').value.trim();
+  hideError();
+  if (!raw) { showError('Pegá el log del broker primero.'); return; }
+
+  const trades = extractTrades(raw);
+  if (!trades.length) { showError('No se encontraron fills en el log. Verificá el formato.'); return; }
+
+  renderResults(trades);
+}
+
+function extractTrades(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // Collect all fills
+  const fills = [];
+  for (const line of lines) {
+    const cols = line.split('\t');
+    if (cols.length < 4) continue;
+
+    const timeStr = cols[0].trim();
+    const ticker = cols[1].trim();
+    const event = cols[2].trim();
+    const detail = cols[3].trim();
+
+    if (!['Filled', 'Partial Fill'].includes(event)) continue;
+    if (!ticker) continue;
+
+    // Parse: "Bought ALMU 7 @ 14,68" or "Sold ALMU 3 @ 15,23"
+    const m = detail.match(/(Bought|Sold)\s+\S+\s+([\d,]+)\s+@\s+([\d,.]+)/i);
+    if (!m) continue;
+
+    const side = m[1].toLowerCase() === 'bought' ? 'BUY' : 'SELL';
+    const shares = parseInt(m[2].replace(',', ''));
+    const price = parseFloat(m[3].replace(',', '.'));
+    const time = parseTime(timeStr);
+
+    fills.push({ ticker, side, shares, price, time, raw: detail });
+  }
+
+  if (!fills.length) return [];
+
+  // Group fills into trades: match BUY fills → SELL fills per ticker in order
+  return buildTrades(fills);
+}
+
+function buildTrades(fills) {
+  // Group by ticker
+  const byTicker = {};
+  for (const f of fills) {
+    if (!byTicker[f.ticker]) byTicker[f.ticker] = [];
+    byTicker[f.ticker].push(f);
+  }
+
+  const trades = [];
+
+  for (const [ticker, tickerFills] of Object.entries(byTicker)) {
+    // Separate buys and sells
+    const buys = tickerFills.filter(f => f.side === 'BUY').sort((a,b) => a.time - b.time);
+    const sells = tickerFills.filter(f => f.side === 'SELL').sort((a,b) => a.time - b.time);
+
+    // Match using FIFO queue
+    const buyQueue = buys.map(f => ({ ...f, remaining: f.shares }));
+    const sellQueue = sells.map(f => ({ ...f, remaining: f.shares }));
+
+    let tradeNum = 1;
+
+    while (buyQueue.length && sellQueue.length) {
+      const buy = buyQueue[0];
+      const sell = sellQueue[0];
+
+      const matchedShares = Math.min(buy.remaining, sell.remaining);
+      const pnl = (sell.price - buy.price) * matchedShares;
+
+      trades.push({
+        ticker,
+        tradeNum: tradeNum++,
+        side: 'LONG',
+        shares: matchedShares,
+        entryPrice: buy.price,
+        exitPrice: sell.price,
+        entryTime: formatTime(buy.time),
+        pnl,
+      });
+
+      buy.remaining -= matchedShares;
+      sell.remaining -= matchedShares;
+
+      if (buy.remaining <= 0) buyQueue.shift();
+      if (sell.remaining <= 0) sellQueue.shift();
+    }
+
+    // Handle short fills (SELL first then BUY)
+    const shortSells = tickerFills.filter(f => f.side === 'SELL').sort((a,b) => a.time - b.time);
+    const coverBuys = tickerFills.filter(f => f.side === 'BUY').sort((a,b) => a.time - b.time);
+
+    // Only process as short if there are unmatched sells
+    // (already handled longs above — this handles pure short setups)
+  }
+
+  return trades;
+}
+
+function parseTime(str) {
+  // "13/04/26 8:41:25 a. m." → timestamp
+  try {
+    const cleaned = str.replace('a. m.', 'AM').replace('p. m.', 'PM');
+    const parts = cleaned.split(' ');
+    const dateParts = parts[0].split('/');
+    const timeParts = parts[1].split(':');
+    const ampm = parts[2];
+    let h = parseInt(timeParts[0]);
+    const m = parseInt(timeParts[1]);
+    const s = parseInt(timeParts[2]);
+    if (ampm === 'PM' && h !== 12) h += 12;
+    if (ampm === 'AM' && h === 12) h = 0;
+    return new Date(2000 + parseInt(dateParts[2]), parseInt(dateParts[1])-1, parseInt(dateParts[0]), h, m, s).getTime();
+  } catch(e) { return 0; }
+}
+
+function formatTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const h = d.getHours().toString().padStart(2,'0');
+  const m = d.getMinutes().toString().padStart(2,'0');
+  return `${h}:${m}`;
+}
+
+// ─── RENDER ────────────────────────────────────────────────────────────────────
+
+let parsedTrades = [];
+
+function renderResults(trades) {
+  parsedTrades = trades;
+
+  const totalPL = trades.reduce((s, t) => s + t.pnl, 0);
+  const wins = trades.filter(t => t.pnl > 0).length;
+  const losses = trades.filter(t => t.pnl <= 0).length;
+  const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
+  const tickers = [...new Set(trades.map(t => t.ticker))];
+
+  // Stats
+  const plEl = document.getElementById('statPL');
+  plEl.textContent = (totalPL >= 0 ? '+' : '') + '$' + totalPL.toFixed(2);
+  plEl.className = 'value ' + (totalPL > 0 ? 'positive' : totalPL < 0 ? 'negative' : 'neutral');
+
+  document.getElementById('statTrades').textContent = `${wins}W / ${losses}L`;
+  document.getElementById('statWR').textContent = winRate + '%';
+  document.getElementById('statTickers').textContent = tickers.join(', ');
+
+  // Table
+  const tbody = document.getElementById('tradesBody');
+  tbody.innerHTML = '';
+  trades.forEach((t, i) => {
+    const plSign = t.pnl >= 0 ? '+' : '';
+    const plClass = t.pnl > 0 ? 'pl-pos' : t.pnl < 0 ? 'pl-neg' : '';
+    tbody.innerHTML += `
+      <tr>
+        <td style="color:var(--muted)">${i+1}</td>
+        <td><span class="ticker-badge">${t.ticker}</span></td>
+        <td><span class="side-badge side-long">${t.side}</span></td>
+        <td>${t.shares}</td>
+        <td>$${t.entryPrice.toFixed(2)}</td>
+        <td>$${t.exitPrice.toFixed(2)}</td>
+        <td class="pl-value ${plClass}">${plSign}$${t.pnl.toFixed(2)}</td>
+        <td style="color:var(--muted)">${t.entryTime}</td>
+      </tr>`;
+  });
+
+  // Raw JSON
+  document.getElementById('rawBox').textContent = JSON.stringify(buildNotionPayload(), null, 2);
+
+  document.getElementById('results').style.display = 'block';
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+// ─── NOTION PAYLOAD ────────────────────────────────────────────────────────────
+
+function buildNotionPayload() {
+  const trades = parsedTrades;
+  const totalPL = trades.reduce((s, t) => s + t.pnl, 0);
+  const wins = trades.filter(t => t.pnl > 0).length;
+  const losses = trades.filter(t => t.pnl <= 0).length;
+  const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
+  const tickers = [...new Set(trades.map(t => t.ticker))];
+
+  // Build trade detail as rich text
+  let tradeText = trades.map((t,i) =>
+    `[${i+1}] ${t.ticker} ${t.side} ${t.shares}sh | Entry $${t.entryPrice.toFixed(2)} → Exit $${t.exitPrice.toFixed(2)} | P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`
+  ).join('\n');
+
+  const today = new Date().toISOString().split('T')[0];
+
+  return {
+    parent: { database_id: "TU_DATABASE_ID" },
+    properties: {
+      "Fecha": { date: { start: today } },
+      "P&L Total": { number: parseFloat(totalPL.toFixed(2)) },
+      "Wins": { number: wins },
+      "Losses": { number: losses },
+      "Win Rate %": { number: winRate },
+      "Nro Trades": { number: trades.length },
+      "Tickers": { multi_select: tickers.map(t => ({ name: t })) }
+    },
+    children: [
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: { rich_text: [{ type: "text", text: { content: "Trades del día" } }] }
+      },
+      {
+        object: "block",
+        type: "code",
+        code: {
+          language: "plain text",
+          rich_text: [{ type: "text", text: { content: tradeText } }]
+        }
+      },
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: { rich_text: [{ type: "text", text: { content: "Notas del día" } }] }
+      },
+      {
+        object: "block",
+        type: "paragraph",
+        paragraph: { rich_text: [{ type: "text", text: { content: "" } }] }
+      }
+    ]
+  };
+}
+
+// ─── NOTION API ────────────────────────────────────────────────────────────────
+
+async function sendToNotion() {
+  const token = document.getElementById('notionToken').value.trim();
+  const dbId = document.getElementById('notionDbId').value.trim();
+
+  if (!token || !dbId) {
+    setNotionStatus('Ingresá el token y el database ID.', 'error'); return;
+  }
+  if (!parsedTrades.length) {
+    setNotionStatus('Parseá el log primero.', 'error'); return;
+  }
+
+  setNotionStatus('Enviando a Notion...', 'loading');
+
+  const payload = buildNotionPayload();
+  payload.parent.database_id = dbId;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: `Eres un proxy para la API de Notion. El usuario te dará un JSON payload y un token de Notion. 
+Debes hacer un POST a https://api.notion.com/v1/pages con ese payload.
+Headers: Authorization: Bearer TOKEN, Content-Type: application/json, Notion-Version: 2022-06-28.
+Responde solo con: {"success": true, "id": "PAGE_ID"} o {"success": false, "error": "mensaje"}`,
+        messages: [{
+          role: 'user',
+          content: `Token: ${token}\nPayload: ${JSON.stringify(payload)}`
+        }]
+      })
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+
+    try {
+      const result = JSON.parse(text);
+      if (result.success) {
+        setNotionStatus(`✓ Página creada en Notion correctamente.`, 'success');
+      } else {
+        setNotionStatus(`Error: ${result.error}`, 'error');
+      }
+    } catch(e) {
+      // Fallback: copy JSON for manual paste
+      setNotionStatus('No se pudo enviar automáticamente. Usá "Copiar JSON" para pegar en la API de Notion.', 'error');
+    }
+  } catch(err) {
+    setNotionStatus('Error de red. Usá "Copiar JSON" para pegar manualmente.', 'error');
+  }
+}
+
+function setNotionStatus(msg, type) {
+  const el = document.getElementById('notionStatus');
+  el.textContent = msg;
+  el.className = 'notion-status ' + type;
+}
+
+function copyJSON() {
+  const json = document.getElementById('rawBox').textContent;
+  if (!json) { alert('Parseá el log primero.'); return; }
+  navigator.clipboard.writeText(json).then(() => {
+    setNotionStatus('JSON copiado al portapapeles.', 'success');
+  });
+}
+
+// ─── UI HELPERS ────────────────────────────────────────────────────────────────
+
+function toggleRaw() {
+  const box = document.getElementById('rawBox');
+  const arrow = document.getElementById('rawArrow');
+  const visible = box.style.display === 'block';
+  box.style.display = visible ? 'none' : 'block';
+  arrow.textContent = visible ? '▶' : '▼';
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('errorMsg').style.display = 'none';
+}
+
+function clearAll() {
+  document.getElementById('logInput').value = '';
+  document.getElementById('results').style.display = 'none';
+  hideError();
+  parsedTrades = [];
+}
+
+function loadExample() {
+  document.getElementById('logInput').value = `13/04/26 8:41:25 a. m.	ALMU	New Order Submitted	BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
+13/04/26 8:41:26 a. m.	ALMU	Order Placed	BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
+13/04/26 8:41:26 a. m.	ALMU	Filled	Bought ALMU 7 @ 14,68 : BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
+13/04/26 8:46:33 a. m.	ALMU	Partial Fill	Sold ALMU 3 @ 15,23 : SELL 4 ALMU at MARKET Day	89a314704b1a41c11111eb865a3d64a8	
+13/04/26 8:46:33 a. m.	ALMU	Filled	Sold ALMU 1 @ 15,23 : SELL 4 ALMU at MARKET Day	89a314704b1a41c11111eb865a3d64a8	
+13/04/26 8:50:35 a. m.	ALMU	Filled	Sold ALMU 3 @ 14,65 : SELL 3 ALMU at STOP of 14,68 Day Route to BATS	656c7a70042f4e0111111a81952cc61c`;
+}
+</script>
+</body>
+</html>
