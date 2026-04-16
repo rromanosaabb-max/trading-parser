@@ -351,10 +351,16 @@
 <div class="section-label">Log del broker</div>
 <textarea id="logInput" placeholder="Pegá acá el texto del log de tu broker..."></textarea>
 
-<div class="btn-row">
-  <button class="btn-primary" onclick="parseLog()">Parsear log</button>
-  <button class="btn-ghost" onclick="loadExample()">Cargar ejemplo</button>
-  <button class="btn-ghost" onclick="clearAll()">Limpiar</button>
+<div style="display:flex; align-items:center; gap:14px; margin-top:14px; flex-wrap:wrap;">
+  <div class="btn-row" style="margin:0; flex:1; min-width:200px;">
+    <button class="btn-primary" onclick="parseLog()">Parsear log</button>
+    <button class="btn-ghost" onclick="loadExample()">Cargar ejemplo</button>
+    <button class="btn-ghost" onclick="clearAll()">Limpiar</button>
+  </div>
+  <div style="display:flex; align-items:center; gap:8px;">
+    <label style="font-size:11px; color:var(--muted); font-family:var(--mono); letter-spacing:0.5px; white-space:nowrap;">FECHA DEL DÍA</label>
+    <input type="date" id="tradeDate" style="background:var(--surface); border:0.5px solid var(--border); border-radius:7px; color:var(--text); font-family:var(--mono); font-size:12px; padding:8px 12px; outline:none; cursor:pointer;" />
+  </div>
 </div>
 
 <div id="errorMsg" class="error-msg"></div>
@@ -400,6 +406,14 @@
     <tbody id="tradesBody"></tbody>
   </table>
 
+  <!-- CHART -->
+  <div class="chart-section">
+    <div class="section-label" style="margin: 28px 0 14px">Curva intradiaria P&L</div>
+    <div style="position:relative; height: 220px;">
+      <canvas id="plChart"></canvas>
+    </div>
+  </div>
+
   <!-- NOTION -->
   <div class="notion-section">
     <h3><span class="notion-dot"></span> Enviar a Notion</h3>
@@ -433,6 +447,12 @@
 </div>
 
 <script>
+// ─── INIT ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const picker = document.getElementById('tradeDate');
+  if (picker) picker.value = new Date().toISOString().split('T')[0];
+});
+
 // ─── PARSER CORE ───────────────────────────────────────────────────────────────
 
 function parseLog() {
@@ -607,6 +627,7 @@ function renderResults(trades) {
   // Raw JSON
   document.getElementById('rawBox').textContent = JSON.stringify(buildNotionPayload(), null, 2);
 
+  renderChart(trades);
   document.getElementById('results').style.display = 'block';
   document.getElementById('errorMsg').style.display = 'none';
 }
@@ -626,7 +647,8 @@ function buildNotionPayload() {
     `[${i+1}] ${t.ticker} ${t.side} ${t.shares}sh | Entry $${t.entryPrice.toFixed(2)} → Exit $${t.exitPrice.toFixed(2)} | P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`
   ).join('\n');
 
-  const today = new Date().toISOString().split('T')[0];
+  const picker = document.getElementById('tradeDate');
+  const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
 
   return {
     parent: { database_id: "TU_DATABASE_ID" },
@@ -686,7 +708,8 @@ async function sendToNotion() {
   payload.parent.database_id = dbId;
 
   // Intentar con búsqueda de página existente para actualizar, sino crear nueva
-  const today = new Date().toISOString().split('T')[0];
+  const picker = document.getElementById('tradeDate');
+  const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
 
   try {
     // Paso 1: buscar si ya existe una página para hoy
@@ -790,6 +813,95 @@ function clearAll() {
 }
 
 function loadExample() {
+
+// ─── P&L CHART ─────────────────────────────────────────────────────────────────
+
+let plChartInstance = null;
+
+function renderChart(trades) {
+  if (!trades.length) return;
+
+  // Build cumulative P&L curve — one point per trade in time order
+  const sorted = [...trades].sort((a, b) => {
+    const ta = a.entryTime || '00:00';
+    const tb = b.entryTime || '00:00';
+    return ta.localeCompare(tb);
+  });
+
+  const labels = [];
+  const data = [];
+  let cumPL = 0;
+
+  // Start at 0
+  labels.push('Inicio');
+  data.push(0);
+
+  sorted.forEach((t, i) => {
+    cumPL += t.pnl;
+    labels.push(t.entryTime + ' ' + t.ticker);
+    data.push(parseFloat(cumPL.toFixed(2)));
+  });
+
+  const ctx = document.getElementById('plChart').getContext('2d');
+
+  if (plChartInstance) {
+    plChartInstance.destroy();
+  }
+
+  const finalPL = data[data.length - 1];
+  const lineColor = finalPL >= 0 ? '#4fd1a5' : '#f05a5a';
+  const fillColor = finalPL >= 0 ? 'rgba(79,209,165,0.08)' : 'rgba(240,90,90,0.08)';
+
+  plChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 2,
+        pointRadius: 5,
+        pointBackgroundColor: data.map(v => v > 0 ? '#4fd1a5' : v < 0 ? '#f05a5a' : '#7a7a96'),
+        pointBorderColor: 'transparent',
+        fill: true,
+        tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#16161a',
+          borderColor: '#2a2a35',
+          borderWidth: 1,
+          titleColor: '#7a7a96',
+          bodyColor: '#e8e8f0',
+          callbacks: {
+            label: ctx => (ctx.raw >= 0 ? '+' : '') + '$' + ctx.raw.toFixed(2)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(42,42,53,0.6)' },
+          ticks: { color: '#7a7a96', font: { family: 'JetBrains Mono', size: 11 } }
+        },
+        y: {
+          grid: { color: 'rgba(42,42,53,0.6)' },
+          ticks: {
+            color: '#7a7a96',
+            font: { family: 'JetBrains Mono', size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + '$' + v.toFixed(2)
+          }
+        }
+      }
+    }
+  });
+}
+
   document.getElementById('logInput').value = `13/04/26 8:41:25 a. m.	ALMU	New Order Submitted	BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
 13/04/26 8:41:26 a. m.	ALMU	Order Placed	BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
 13/04/26 8:41:26 a. m.	ALMU	Filled	Bought ALMU 7 @ 14,68 : BUY 7 ALMU at LIMIT of 14,78 Day	5fa8cf6995ff40411111984f12f9e26d	
@@ -798,5 +910,6 @@ function loadExample() {
 13/04/26 8:50:35 a. m.	ALMU	Filled	Sold ALMU 3 @ 14,65 : SELL 3 ALMU at STOP of 14,68 Day Route to BATS	656c7a70042f4e0111111a81952cc61c`;
 }
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </body>
 </html>
