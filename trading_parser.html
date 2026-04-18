@@ -343,7 +343,8 @@ function buildNotionPayload() {
 
 async function notionFetch(endpoint, options) {
   const target = 'https://api.notion.com' + endpoint;
-  const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
+  // corsproxy.io requires NON-encoded URL for POST requests
+  const url = 'https://corsproxy.io/?url=' + target;
   const res = await fetch(url, options);
   return res;
 }
