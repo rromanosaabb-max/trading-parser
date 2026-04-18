@@ -35,6 +35,17 @@ function extractTrades(text) {
     const event = cols[2].trim();
     const detail = cols[3].trim();
 
+    // Capture stop loss orders
+    if (['New Order Submitted', 'Order Placed', 'Modified'].includes(event) && ticker) {
+      const stopMatch = detail.match(/(?:SHORT|SELL)\s+[\d,]+\s+\S+\s+at\s+STOP\s+of\s+([\d,.]+)/i);
+      if (stopMatch) {
+        const stopPrice = parseFloat(stopMatch[1].replace(',', '.'));
+        const time = parseTime(timeStr);
+        fills.push({ ticker, side: 'STOP_ORDER', shares: 0, price: stopPrice, time, raw: detail, isStop: true });
+      }
+      continue;
+    }
+
     if (!['Filled', 'Partial Fill'].includes(event)) continue;
     if (!ticker) continue;
 
@@ -57,60 +68,120 @@ function extractTrades(text) {
 }
 
 function buildTrades(fills) {
-  // Group by ticker
+  // Sort all fills by time globally
+  const sorted = [...fills].sort((a, b) => a.time - b.time);
+
+  // Group by ticker, then build positions: a position closes when net shares = 0
   const byTicker = {};
-  for (const f of fills) {
+  for (const f of sorted) {
     if (!byTicker[f.ticker]) byTicker[f.ticker] = [];
     byTicker[f.ticker].push(f);
   }
 
-  const trades = [];
+  const positions = [];
 
   for (const [ticker, tickerFills] of Object.entries(byTicker)) {
-    // Separate buys and sells
-    const buys = tickerFills.filter(f => f.side === 'BUY').sort((a,b) => a.time - b.time);
-    const sells = tickerFills.filter(f => f.side === 'SELL').sort((a,b) => a.time - b.time);
+    let netShares = 0;
+    let currentPos = null;
 
-    // Match using FIFO queue
-    const buyQueue = buys.map(f => ({ ...f, remaining: f.shares }));
-    const sellQueue = sells.map(f => ({ ...f, remaining: f.shares }));
+    for (const fill of tickerFills) {
+      // Detect direction: if first fill is SELL → SHORT, else LONG
+      if (!currentPos) {
+        const dir = fill.side === 'BUY' ? 'LONG' : 'SHORT';
+        currentPos = {
+          ticker,
+          side: dir,
+          entries: [],   // { shares, price, time }
+          exits: [],     // { shares, price, time }
+          pnl: 0,
+        };
+      }
 
-    let tradeNum = 1;
+      if (fill.isStop) {
+        // Capture most recent stop price (overwrite if modified)
+        currentPos.stopLoss = fill.price;
+        continue;
+      }
 
-    while (buyQueue.length && sellQueue.length) {
-      const buy = buyQueue[0];
-      const sell = sellQueue[0];
+      if (fill.side === 'BUY') {
+        netShares += fill.shares;
+        if (currentPos.side === 'LONG') {
+          currentPos.entries.push({ shares: fill.shares, price: fill.price, time: fill.time });
+        } else {
+          // SHORT cover
+          currentPos.exits.push({ shares: fill.shares, price: fill.price, time: fill.time });
+        }
+      } else {
+        netShares -= fill.shares;
+        if (currentPos.side === 'LONG') {
+          currentPos.exits.push({ shares: fill.shares, price: fill.price, time: fill.time });
+        } else {
+          // SHORT entry
+          currentPos.entries.push({ shares: fill.shares, price: fill.price, time: fill.time });
+        }
+      }
 
-      const matchedShares = Math.min(buy.remaining, sell.remaining);
-      const pnl = (sell.price - buy.price) * matchedShares;
+      // When position reaches zero → close it
+      if (netShares === 0) {
+        // Calculate P&L
+        let pnl = 0;
+        const entryQ = currentPos.entries.map(e => ({ ...e, rem: e.shares }));
+        const exitQ  = currentPos.exits.map(e => ({ ...e, rem: e.shares }));
+        while (entryQ.length && exitQ.length) {
+          const en = entryQ[0], ex = exitQ[0];
+          const matched = Math.min(en.rem, ex.rem);
+          pnl += currentPos.side === 'LONG'
+            ? (ex.price - en.price) * matched
+            : (en.price - ex.price) * matched;
+          en.rem -= matched; ex.rem -= matched;
+          if (en.rem <= 0) entryQ.shift();
+          if (ex.rem <= 0) exitQ.shift();
+        }
+        currentPos.pnl = parseFloat(pnl.toFixed(2));
 
-      trades.push({
-        ticker,
-        tradeNum: tradeNum++,
-        side: 'LONG',
-        shares: matchedShares,
-        entryPrice: buy.price,
-        exitPrice: sell.price,
-        entryTime: formatTime(buy.time),
-        pnl,
-      });
+        // Avg entry/exit prices
+        const totalEntryShares = currentPos.entries.reduce((s,e) => s + e.shares, 0);
+        const totalExitShares  = currentPos.exits.reduce((s,e) => s + e.shares, 0);
+        currentPos.avgEntry = currentPos.entries.reduce((s,e) => s + e.price * e.shares, 0) / totalEntryShares;
+        currentPos.avgExit  = currentPos.exits.reduce((s,e) => s + e.price * e.shares, 0) / totalExitShares;
+        currentPos.totalShares = totalEntryShares;
+        currentPos.entryTime = formatTime(currentPos.entries[0].time);
+        currentPos.exitTime  = formatTime(currentPos.exits[currentPos.exits.length - 1].time);
 
-      buy.remaining -= matchedShares;
-      sell.remaining -= matchedShares;
+        // Compute R for each exit using stop loss
+        if (currentPos.stopLoss && currentPos.avgEntry) {
+          const risk = Math.abs(currentPos.avgEntry - currentPos.stopLoss);
+          if (risk > 0) {
+            currentPos.exits.forEach((ex, i) => {
+              const reward = currentPos.side === 'LONG'
+                ? ex.price - currentPos.avgEntry
+                : currentPos.avgEntry - ex.price;
+              ex.r = parseFloat((reward / risk).toFixed(2));
+            });
+          }
+        }
 
-      if (buy.remaining <= 0) buyQueue.shift();
-      if (sell.remaining <= 0) sellQueue.shift();
+        positions.push(currentPos);
+        currentPos = null;
+        netShares = 0;
+      }
     }
 
-    // Handle short fills (SELL first then BUY)
-    const shortSells = tickerFills.filter(f => f.side === 'SELL').sort((a,b) => a.time - b.time);
-    const coverBuys = tickerFills.filter(f => f.side === 'BUY').sort((a,b) => a.time - b.time);
-
-    // Only process as short if there are unmatched sells
-    // (already handled longs above — this handles pure short setups)
+    // If position never closed (end of day open) — still show it
+    if (currentPos && (currentPos.entries.length || currentPos.exits.length)) {
+      currentPos.pnl = 0;
+      currentPos.avgEntry = currentPos.entries.length
+        ? currentPos.entries.reduce((s,e) => s + e.price * e.shares, 0) / currentPos.entries.reduce((s,e) => s + e.shares, 0)
+        : 0;
+      currentPos.avgExit = 0;
+      currentPos.totalShares = currentPos.entries.reduce((s,e) => s + e.shares, 0);
+      currentPos.entryTime = formatTime(currentPos.entries[0]?.time || 0);
+      currentPos.exitTime = '—';
+      positions.push(currentPos);
+    }
   }
 
-  return trades;
+  return positions;
 }
 
 function parseTime(str) {
@@ -160,22 +231,43 @@ function renderResults(trades) {
   document.getElementById('statWR').textContent = winRate + '%';
   document.getElementById('statTickers').textContent = tickers.join(', ');
 
-  // Table
+  // Table — grouped by position
   const tbody = document.getElementById('tradesBody');
   tbody.innerHTML = '';
-  trades.forEach((t, i) => {
-    const plSign = t.pnl >= 0 ? '+' : '';
-    const plClass = t.pnl > 0 ? 'pl-pos' : t.pnl < 0 ? 'pl-neg' : '';
+  trades.forEach((pos, i) => {
+    const plSign = pos.pnl >= 0 ? '+' : '';
+    const plClass = pos.pnl > 0 ? 'pl-pos' : pos.pnl < 0 ? 'pl-neg' : '';
+    const sideClass = pos.side === 'SHORT' ? 'side-short' : 'side-long';
+
+    // Build exits string: TP1, TP2, Stop...
+    const exitsStr = pos.exits.map((ex, j) => {
+      const label = pos.exits.length > 1 ? `TP${j+1}` : 'Exit';
+      return `${label} ${ex.shares}sh @ $${ex.price.toFixed(2)}`;
+    }).join('<br>');
+
+    // Build entries string
+    const entriesStr = pos.entries.map((en, j) => {
+      const label = pos.entries.length > 1 ? `E${j+1}` : 'Entry';
+      return `${label} ${en.shares}sh @ $${en.price.toFixed(2)}`;
+    }).join('<br>');
+
+    const stopStr = pos.stopLoss ? `$${pos.stopLoss.toFixed(2)}` : '—';
+    const exitsWithR = pos.exits.map((ex, j) => {
+      const label = pos.exits.length > 1 ? `TP${j+1}` : 'Exit';
+      const rStr = ex.r !== undefined ? ` (${ex.r}R)` : '';
+      return `${label} ${ex.shares}sh@$${ex.price.toFixed(2)}${rStr}`;
+    }).join('<br>');
+
     tbody.innerHTML += `
       <tr>
         <td style="color:var(--muted)">${i+1}</td>
-        <td><span class="ticker-badge">${t.ticker}</span></td>
-        <td><span class="side-badge side-long">${t.side}</span></td>
-        <td>${t.shares}</td>
-        <td>$${t.entryPrice.toFixed(2)}</td>
-        <td>$${t.exitPrice.toFixed(2)}</td>
-        <td class="pl-value ${plClass}">${plSign}$${t.pnl.toFixed(2)}</td>
-        <td style="color:var(--muted)">${t.entryTime}</td>
+        <td><span class="ticker-badge">${pos.ticker}</span></td>
+        <td><span class="side-badge ${sideClass}">${pos.side}</span></td>
+        <td style="font-size:11px;line-height:1.8">${entriesStr}</td>
+        <td style="font-size:11px;color:var(--loss)">${stopStr}</td>
+        <td style="font-size:11px;line-height:1.8">${exitsWithR || '—'}</td>
+        <td class="pl-value ${plClass}">${plSign}$${pos.pnl.toFixed(2)}</td>
+        <td style="color:var(--muted)">${pos.entryTime}</td>
       </tr>`;
   });
 
@@ -198,9 +290,11 @@ function buildNotionPayload() {
   const tickers = [...new Set(trades.map(t => t.ticker))];
 
   // Build trade detail as rich text
-  let tradeText = trades.map((t,i) =>
-    `[${i+1}] ${t.ticker} ${t.side} ${t.shares}sh | Entry $${t.entryPrice.toFixed(2)} → Exit $${t.exitPrice.toFixed(2)} | P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`
-  ).join('\n');
+  let tradeText = trades.map((t,i) => {
+    const entryStr = t.entries ? t.entries.map((e,j) => `E${j+1} ${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : `$${(t.avgEntry||0).toFixed(2)}`;
+    const exitStr  = t.exits  ? t.exits.map((e,j)  => `TP${j+1} ${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : `$${(t.avgExit||0).toFixed(2)}`;
+    return `[${i+1}] ${t.ticker} ${t.side} | ${entryStr} → ${exitStr} | P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`;
+  }).join('\n');
 
   const picker = document.getElementById('tradeDate');
   const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
@@ -244,6 +338,29 @@ function buildNotionPayload() {
   };
 }
 
+
+// ─── NOTION PROXY ──────────────────────────────────────────────────────────────
+
+async function notionFetch(endpoint, options) {
+  const base = 'https://api.notion.com';
+  // Try both corsproxy formats
+  const proxies = [
+    'https://corsproxy.io/?url=' + encodeURIComponent(base + endpoint),
+    'https://corsproxy.io/?' + base + endpoint,
+  ];
+  
+  for (const url of proxies) {
+    try {
+      const res = await fetch(url, options);
+      // Accept any response (even 400/401) — means proxy worked
+      if (res.status !== 0) return res;
+    } catch(e) {
+      continue;
+    }
+  }
+  throw new Error('Proxy no disponible. Verificá tu conexión a internet.');
+}
+
 // ─── NOTION API ────────────────────────────────────────────────────────────────
 
 async function sendToNotion() {
@@ -268,7 +385,7 @@ async function sendToNotion() {
 
   try {
     // Paso 1: buscar si ya existe una página para hoy
-    const searchRes = await fetch('https://corsproxy.io/?url=https://api.notion.com/v1/databases/' + dbId + '/query', {
+    const searchRes = await notionFetch('/v1/databases/' + dbId + '/query', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + token,
@@ -288,7 +405,7 @@ async function sendToNotion() {
     if (searchData.results && searchData.results.length > 0) {
       // Actualizar página existente
       const pageId = searchData.results[0].id;
-      const updateRes = await fetch('https://corsproxy.io/?url=https://api.notion.com/v1/pages/' + pageId, {
+      const updateRes = await notionFetch('/v1/pages/' + pageId, {
         method: 'PATCH',
         headers: {
           'Authorization': 'Bearer ' + token,
@@ -305,7 +422,7 @@ async function sendToNotion() {
       }
     } else {
       // Crear página nueva
-      const createRes = await fetch('https://corsproxy.io/?url=https://api.notion.com/v1/pages', {
+      const createRes = await notionFetch('/v1/pages', {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + token,
@@ -441,6 +558,170 @@ function renderChart(trades) {
     ${xLabels}
     ${dots}
   `;
+}
+
+
+// ─── SEND TO CHARTS ────────────────────────────────────────────────────────────
+
+async function sendToCharts() {
+  const token = document.getElementById('notionToken').value.trim();
+  if (!token) { setNotionStatus('Ingresá el token primero.', 'error'); return; }
+  if (!parsedTrades.length) { setNotionStatus('Parseá el log primero.', 'error'); return; }
+
+  const picker = document.getElementById('tradeDate');
+  const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
+  const chartsDbId = '0b17fb11-d47f-43c0-bb3d-100cb8fca502';
+
+  setNotionStatus(`Creando ${parsedTrades.length} entradas en Charts...`, 'loading');
+
+  let created = 0;
+  let errors = 0;
+
+  for (const pos of parsedTrades) {
+    const resultado = pos.pnl > 0 ? 'Win' : pos.pnl < 0 ? 'Loss' : 'Break Even';
+    const tp1 = pos.exits[0] || null;
+    const tp2 = pos.exits[1] || null;
+
+    const props = {
+      "Nombre": pos.ticker,
+      "date:Fecha:start": today,
+      "date:Fecha:is_datetime": 0,
+      "Resultado": resultado,
+      "Tomado": "Si",
+      "Lado": pos.side,
+      "P&L": pos.pnl,
+      "Entry Price": parseFloat(pos.avgEntry.toFixed(2)),
+      "Shares": pos.totalShares,
+    };
+
+    if (pos.stopLoss) props["Stop Loss"] = pos.stopLoss;
+    if (tp1) {
+      props["TP1 Price"] = tp1.price;
+      if (tp1.r !== undefined) props["TP1 R"] = tp1.r;
+    }
+    if (tp2) {
+      props["TP2 Price"] = tp2.price;
+      if (tp2.r !== undefined) props["TP2 R"] = tp2.r;
+    }
+
+    try {
+      const res = await notionFetch('/v1/pages', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'Notion-Version': '2022-06-28'
+        },
+        body: JSON.stringify({
+          parent: { database_id: chartsDbId },
+          properties: {
+            "Nombre": { title: [{ text: { content: pos.ticker } }] },
+            "date:Fecha:start": undefined,
+            "Fecha": { date: { start: today } },
+            "Resultado": { select: { name: resultado } },
+            "Tomado": { select: { name: "Si" } },
+            "Lado": { select: { name: pos.side } },
+            "P&L": { number: pos.pnl },
+            "Entry Price": { number: parseFloat(pos.avgEntry.toFixed(2)) },
+            "Shares": { number: pos.totalShares },
+            ...(pos.stopLoss ? { "Stop Loss": { number: pos.stopLoss } } : {}),
+            ...(tp1 ? { "TP1 Price": { number: tp1.price } } : {}),
+            ...(tp1?.r !== undefined ? { "TP1 R": { number: tp1.r } } : {}),
+            ...(tp2 ? { "TP2 Price": { number: tp2.price } } : {}),
+            ...(tp2?.r !== undefined ? { "TP2 R": { number: tp2.r } } : {}),
+          }
+        })
+      });
+      const data = await res.json();
+      if (data.id) created++;
+      else errors++;
+    } catch(e) {
+      errors++;
+    }
+  }
+
+  if (created > 0 && errors === 0) {
+    setNotionStatus(`✓ ${created} entradas creadas en Charts. Ahora agregá el setup, calidad y captura en cada una.`, 'success');
+  } else if (created > 0) {
+    setNotionStatus(`${created} entradas creadas, ${errors} errores.`, 'success');
+  } else {
+    setNotionStatus('Error al crear entradas en Charts. Verificá la conexión de la integración.', 'error');
+  }
+}
+
+
+// ─── COPY FOR NOTION ───────────────────────────────────────────────────────────
+
+function copyForNotion() {
+  if (!parsedTrades.length) { alert('Parseá el log primero.'); return; }
+
+  const picker = document.getElementById('tradeDate');
+  const dateStr = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
+  const totalPL = parsedTrades.reduce((s,t) => s + t.pnl, 0);
+  const wins = parsedTrades.filter(t => t.pnl > 0).length;
+  const losses = parsedTrades.filter(t => t.pnl <= 0).length;
+  const winRate = parsedTrades.length ? Math.round((wins / parsedTrades.length) * 100) : 0;
+
+  const lines = [];
+
+  // Header
+  lines.push('═══════════════════════════════════');
+  lines.push(`TRADES DEL DÍA — ${dateStr}`);
+  lines.push('═══════════════════════════════════');
+  lines.push(`P&L Total: ${totalPL >= 0 ? '+' : ''}$${totalPL.toFixed(2)}  |  ${wins}W / ${losses}L  |  Win Rate: ${winRate}%`);
+  lines.push('');
+
+  // Separator line
+  lines.push('───────────────────────────────────');
+
+  // Each position
+  parsedTrades.forEach((pos, i) => {
+    const plSign = pos.pnl >= 0 ? '+' : '';
+    const resultado = pos.pnl > 0 ? '✅ WIN' : pos.pnl < 0 ? '❌ LOSS' : '➖ BE';
+
+    // Entry line
+    const entryStr = pos.entries.length > 1
+      ? pos.entries.map((e,j) => `E${j+1}: ${e.shares}sh @ $${e.price.toFixed(2)}`).join('  ')
+      : `Entry: ${pos.entries[0]?.shares}sh @ $${pos.entries[0]?.price.toFixed(2)}`;
+
+    // Stop
+    const stopStr = pos.stopLoss ? `Stop: $${pos.stopLoss.toFixed(2)}` : 'Stop: —';
+
+    // Exits with R
+    const exitsStr = pos.exits.length > 1
+      ? pos.exits.map((e,j) => {
+          const rStr = e.r !== undefined ? ` (${e.r}R)` : '';
+          return `TP${j+1}: ${e.shares}sh @ $${e.price.toFixed(2)}${rStr}`;
+        }).join('  ')
+      : pos.exits.length === 1
+        ? `Exit: ${pos.exits[0].shares}sh @ $${pos.exits[0].price.toFixed(2)}${pos.exits[0].r !== undefined ? ` (${pos.exits[0].r}R)` : ''}`
+        : 'Exit: —';
+
+    lines.push(`#${i+1} ${pos.ticker} ${pos.side} — ${resultado} — ${plSign}$${pos.pnl.toFixed(2)}`);
+    lines.push(`  ${entryStr}`);
+    lines.push(`  ${stopStr}   ${exitsStr}`);
+    lines.push(`  Hora: ${pos.entryTime}`);
+    lines.push('───────────────────────────────────');
+  });
+
+  // Footer
+  lines.push('');
+  lines.push('[ Completar: Setup | Calidad | Errores | MFE | Captura ]');
+
+  const text = lines.join('\n');
+
+  navigator.clipboard.writeText(text).then(() => {
+    setNotionStatus('✓ Copiado. Pegá con Ctrl+V en la página del día en Notion.', 'success');
+  }).catch(() => {
+    // Fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    setNotionStatus('✓ Copiado. Pegá con Ctrl+V en la página del día en Notion.', 'success');
+  });
 }
 
 function loadExample() {
@@ -850,11 +1131,11 @@ function loadExample() {
         <th>#</th>
         <th>Ticker</th>
         <th>Lado</th>
-        <th>Shares</th>
-        <th>Entry avg</th>
-        <th>Exit avg</th>
+        <th>Entradas</th>
+        <th>Stop</th>
+        <th>Salidas / R</th>
         <th>P&L</th>
-        <th>Hora entrada</th>
+        <th>Hora</th>
       </tr>
     </thead>
     <tbody id="tradesBody"></tbody>
@@ -884,8 +1165,10 @@ function loadExample() {
     </div>
 
     <div class="btn-row" style="margin-top:4px">
-      <button class="btn-primary" onclick="sendToNotion()">Enviar a Notion</button>
+      <button class="btn-primary" onclick="sendToNotion()">Enviar a Trading Journal</button>
+      <button class="btn-primary" style="background:var(--accent2);color:#000" onclick="sendToCharts()">Crear entradas en Charts</button>
       <button class="btn-ghost" onclick="copyJSON()">Copiar JSON</button>
+      <button class="btn-ghost" style="border-color:var(--accent2);color:var(--accent2)" onclick="copyForNotion()">Copiar para Notion</button>
     </div>
 
     <div id="notionStatus" class="notion-status"></div>
