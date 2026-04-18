@@ -560,6 +560,33 @@ async function sendToCharts() {
   const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
   const chartsDbId = '0b17fb11-d47f-43c0-bb3d-100cb8fca502';
 
+  setNotionStatus('Verificando conexión con Charts...', 'loading');
+
+  // Test connection first
+  try {
+    const testRes = await notionFetch('/v1/databases/' + chartsDbId + '/query', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json',
+        'Notion-Version': '2022-06-28'
+      },
+      body: JSON.stringify({ page_size: 1 })
+    });
+    const testData = await testRes.json();
+    if (testData.status === 404 || testData.code === 'object_not_found') {
+      setNotionStatus('Error: La integración "Trading Parser" no tiene acceso a la database Charts. Andá a Charts en Notion → (...) → Connections → agregar Trading Parser.', 'error');
+      return;
+    }
+    if (testData.code === 'unauthorized') {
+      setNotionStatus('Error: Token inválido.', 'error');
+      return;
+    }
+  } catch(e) {
+    setNotionStatus('Error de conexión: ' + e.message, 'error');
+    return;
+  }
+
   setNotionStatus(`Creando ${parsedTrades.length} entradas en Charts...`, 'loading');
 
   let created = 0;
