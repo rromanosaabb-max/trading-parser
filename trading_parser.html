@@ -289,11 +289,20 @@ function buildNotionPayload() {
   const winRate = trades.length ? Math.round((wins / trades.length) * 100) : 0;
   const tickers = [...new Set(trades.map(t => t.ticker))];
 
-  // Build trade detail as rich text
+  // Build trade summary text
   let tradeText = trades.map((t,i) => {
-    const entryStr = t.entries ? t.entries.map((e,j) => `E${j+1} ${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : `$${(t.avgEntry||0).toFixed(2)}`;
-    const exitStr  = t.exits  ? t.exits.map((e,j)  => `TP${j+1} ${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : `$${(t.avgExit||0).toFixed(2)}`;
-    return `[${i+1}] ${t.ticker} ${t.side} | ${entryStr} → ${exitStr} | P&L: ${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}`;
+    const entryStr = t.entries ? t.entries.map((e,j) => `E${j+1}:${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : `$${(t.avgEntry||0).toFixed(2)}`;
+    const stopStr = t.stopLoss ? ` SL:$${t.stopLoss.toFixed(2)}` : '';
+    const exitStr = t.exits && t.exits.length
+      ? t.exits.map((e,j) => {
+          const rStr = e.r !== undefined ? `(${e.r}R)` : '';
+          const label = t.exits.length > 1 ? `TP${j+1}` : 'Exit';
+          return `${label}:${e.shares}sh@$${e.price.toFixed(2)}${rStr}`;
+        }).join(' ')
+      : '—';
+    const plSign = t.pnl >= 0 ? '+' : '';
+    const resultado = t.pnl > 0 ? 'WIN' : t.pnl < 0 ? 'LOSS' : 'BE';
+    return `#${i+1} ${t.ticker} ${t.side} | ${entryStr}${stopStr} → ${exitStr} | ${plSign}$${t.pnl.toFixed(2)} ${resultado}`;
   }).join('\n');
 
   const picker = document.getElementById('tradeDate');
@@ -308,7 +317,8 @@ function buildNotionPayload() {
       "Losses": { number: losses },
       "Win Rate %": { number: winRate },
       "Nro Trades": { number: trades.length },
-      "Tickers": { multi_select: tickers.map(t => ({ name: t })) }
+      "Tickers": { multi_select: tickers.map(t => ({ name: t })) },
+      "Resumen Trades": { rich_text: [{ type: "text", text: { content: tradeText } }] }
     },
     children: [
       {
@@ -754,6 +764,48 @@ function copyForNotion() {
   });
 }
 
+
+// ─── COPY RESUMEN ──────────────────────────────────────────────────────────────
+
+function copyResumen() {
+  if (!parsedTrades.length) { alert('Parseá el log primero.'); return; }
+
+  const picker = document.getElementById('tradeDate');
+  const dateStr = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
+  const totalPL = parsedTrades.reduce((s,t) => s + t.pnl, 0);
+  const wins = parsedTrades.filter(t => t.pnl > 0).length;
+  const losses = parsedTrades.filter(t => t.pnl <= 0).length;
+  const winRate = parsedTrades.length ? Math.round((wins / parsedTrades.length) * 100) : 0;
+
+  const header = `${dateStr} | P&L: ${totalPL>=0?'+':''}$${totalPL.toFixed(2)} | ${wins}W/${losses}L | WR: ${winRate}%`;
+  const trades = parsedTrades.map((t,i) => {
+    const entryStr = t.entries ? t.entries.map((e,j) => `E${j+1}:${e.shares}sh@$${e.price.toFixed(2)}`).join(' ') : '';
+    const stopStr = t.stopLoss ? ` SL:$${t.stopLoss.toFixed(2)}` : '';
+    const exitStr = t.exits && t.exits.length
+      ? t.exits.map((e,j) => {
+          const rStr = e.r !== undefined ? `(${e.r}R)` : '';
+          const label = t.exits.length > 1 ? `TP${j+1}` : 'Exit';
+          return `${label}:${e.shares}sh@$${e.price.toFixed(2)}${rStr}`;
+        }).join(' ')
+      : '—';
+    const plSign = t.pnl >= 0 ? '+' : '';
+    const resultado = t.pnl > 0 ? 'WIN' : t.pnl < 0 ? 'LOSS' : 'BE';
+    return `  #${i+1} ${t.ticker} ${t.side} | ${entryStr}${stopStr} → ${exitStr} | ${plSign}$${t.pnl.toFixed(2)} ${resultado}`;
+  }).join('\n');
+
+  const text = header + '\n' + trades;
+
+  navigator.clipboard.writeText(text).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+  setNotionStatus('✓ Resumen copiado. Pegá con Ctrl+V donde quieras.', 'success');
+}
+
 function loadExample() {
 
 
@@ -1196,9 +1248,7 @@ function loadExample() {
 
     <div class="btn-row" style="margin-top:4px">
       <button class="btn-primary" onclick="sendToNotion()">Enviar a Trading Journal</button>
-      <button class="btn-primary" style="background:var(--accent2);color:#000" onclick="sendToCharts()">Crear entradas en Charts</button>
-      <button class="btn-ghost" onclick="copyJSON()">Copiar JSON</button>
-      <button class="btn-ghost" style="border-color:var(--accent2);color:var(--accent2)" onclick="copyForNotion()">Copiar para Notion</button>
+      <button class="btn-ghost" onclick="copyResumen()">Copiar resumen</button>
     </div>
 
     <div id="notionStatus" class="notion-status"></div>
