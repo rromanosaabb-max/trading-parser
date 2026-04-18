@@ -343,10 +343,25 @@ function buildNotionPayload() {
 
 async function notionFetch(endpoint, options) {
   const target = 'https://api.notion.com' + endpoint;
-  // Must encode the full target URL for corsproxy.io
-  const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
-  const res = await fetch(url, options);
-  return res;
+  // Add x-requested-with header to pass corsproxy auth check
+  const headers = {
+    ...options.headers,
+    'X-Requested-With': 'XMLHttpRequest',
+    'X-Target-URL': target,
+  };
+  // Try multiple proxy strategies
+  const attempts = [
+    () => fetch('https://corsproxy.io/?' + target, { ...options, headers }),
+    () => fetch('https://corsproxy.io/?url=' + encodeURIComponent(target), { ...options, headers }),
+    () => fetch('https://proxy.cors.sh/' + target, { ...options, headers: { ...headers, 'x-cors-api-key': 'temp_' + Date.now() } }),
+  ];
+  for (const attempt of attempts) {
+    try {
+      const res = await attempt();
+      if (res.status !== 404 && res.status !== 0) return res;
+    } catch(e) { continue; }
+  }
+  throw new Error('No se pudo conectar con Notion. Intentá de nuevo.');
 }
 
 // ─── NOTION API ────────────────────────────────────────────────────────────────
