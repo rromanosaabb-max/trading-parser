@@ -343,8 +343,8 @@ function buildNotionPayload() {
 
 async function notionFetch(endpoint, options) {
   const target = 'https://api.notion.com' + endpoint;
-  // corsproxy.io requires NON-encoded URL for POST requests
-  const url = 'https://corsproxy.io/?url=' + target;
+  // Must encode the full target URL for corsproxy.io
+  const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
   const res = await fetch(url, options);
   return res;
 }
@@ -558,7 +558,7 @@ async function sendToCharts() {
 
   const picker = document.getElementById('tradeDate');
   const today = picker && picker.value ? picker.value : new Date().toISOString().split('T')[0];
-  const chartsDbId = '0b17fb11-d47f-43c0-bb3d-100cb8fca502';
+  const chartsDbId = '0b17fb11d47f43c0bb3d100cb8fca502';
 
   setNotionStatus('Verificando conexión con Charts...', 'loading');
 
