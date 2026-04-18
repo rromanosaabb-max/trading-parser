@@ -98,8 +98,8 @@ function buildTrades(fills) {
       }
 
       if (fill.isStop) {
-        // Capture most recent stop price (overwrite if modified)
-        currentPos.stopLoss = fill.price;
+        // Capture FIRST stop only — the initial automatic stop placed with the entry
+        if (!currentPos.stopLoss) currentPos.stopLoss = fill.price;
         continue;
       }
 
@@ -342,23 +342,10 @@ function buildNotionPayload() {
 // ─── NOTION PROXY ──────────────────────────────────────────────────────────────
 
 async function notionFetch(endpoint, options) {
-  const base = 'https://api.notion.com';
-  // Try both corsproxy formats
-  const proxies = [
-    'https://corsproxy.io/?url=' + encodeURIComponent(base + endpoint),
-    'https://corsproxy.io/?' + base + endpoint,
-  ];
-  
-  for (const url of proxies) {
-    try {
-      const res = await fetch(url, options);
-      // Accept any response (even 400/401) — means proxy worked
-      if (res.status !== 0) return res;
-    } catch(e) {
-      continue;
-    }
-  }
-  throw new Error('Proxy no disponible. Verificá tu conexión a internet.');
+  const target = 'https://api.notion.com' + endpoint;
+  const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
+  const res = await fetch(url, options);
+  return res;
 }
 
 // ─── NOTION API ────────────────────────────────────────────────────────────────
@@ -616,11 +603,11 @@ async function sendToCharts() {
           parent: { database_id: chartsDbId },
           properties: {
             "Nombre": { title: [{ text: { content: pos.ticker } }] },
-            "date:Fecha:start": undefined,
             "Fecha": { date: { start: today } },
             "Resultado": { select: { name: resultado } },
             "Tomado": { select: { name: "Si" } },
             "Lado": { select: { name: pos.side } },
+            "Ticker": { select: { name: pos.ticker } },
             "P&L": { number: pos.pnl },
             "Entry Price": { number: parseFloat(pos.avgEntry.toFixed(2)) },
             "Shares": { number: pos.totalShares },
